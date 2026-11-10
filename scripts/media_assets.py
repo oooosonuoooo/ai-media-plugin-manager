@@ -27,6 +27,10 @@ from typing import Any
 VERSION = "0.1.0"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SAFE_SUFFIXES = {".cube", ".bundle", ".zip", ".kdenlivetitle", ".svg", ".json", ".png", ".jpg", ".jpeg", ".webp", ".wav", ".flac", ".txt"}
+LIBRARY_SUFFIXES = (SAFE_SUFFIXES - {".txt", ".zip"}) | {
+    ".apng", ".blend", ".exr", ".gbr", ".gif", ".gpl", ".kra", ".kdenlive",
+    ".kpl", ".kpp", ".mlt", ".mov", ".mp4", ".otf", ".pat", ".rawr", ".ttf", ".webm",
+}
 ALLOWED_HOSTS = {
     "raw.githubusercontent.com",
     "github.com",
@@ -261,7 +265,10 @@ def validate_cube(path: Path) -> dict[str, Any]:
             if parts[0].upper() == "LUT_3D_SIZE":
                 if len(parts) != 2:
                     raise ManagerError("Malformed LUT_3D_SIZE declaration")
-                size = int(parts[1])
+                try:
+                    size = int(parts[1])
+                except ValueError as exc:
+                    raise ManagerError("LUT_3D_SIZE must be an integer") from exc
                 if size < 2 or size > 128:
                     raise ManagerError(f"Unsupported LUT dimension: {size}")
                 continue
@@ -521,15 +528,21 @@ def install_item(item: dict[str, Any], *, yes: bool = False, replace: bool = Fal
     installed_resource_type = item.get("installed_resource_type", item.get("resource_type"))
     if item.get("archive_member"):
         payload_cache = cache.parent / f"{item['version']}-{download_meta['sha256'][:16]}-{safe_name(item['installed_filename'])}"
-        if not payload_cache.is_file():
-            with zipfile.ZipFile(cache) as archive:
-                payload = archive.read(item["archive_member"])
+        reject_symlink_components(payload_cache, "extract to a symbolic-link cache path")
+        with zipfile.ZipFile(cache) as archive:
+            payload = archive.read(item["archive_member"])
+        payload_hash = hashlib.sha256(payload).hexdigest()
+        if not payload_cache.is_file() or sha256_file(payload_cache) != payload_hash:
             fd, temp_name = tempfile.mkstemp(prefix=f".{payload_cache.name}.", suffix=".part", dir=payload_cache.parent)
-            with os.fdopen(fd, "wb") as output:
-                output.write(payload)
-                output.flush()
-                os.fsync(output.fileno())
-            os.replace(temp_name, payload_cache)
+            temp_payload = Path(temp_name)
+            try:
+                with os.fdopen(fd, "wb") as output:
+                    output.write(payload)
+                    output.flush()
+                    os.fsync(output.fileno())
+                os.replace(temp_payload, payload_cache)
+            finally:
+                temp_payload.unlink(missing_ok=True)
         bundle_item = {**item, "resource_type": installed_resource_type}
         format_meta = validate_resource_file(bundle_item, payload_cache)
     installed_hash = sha256_file(payload_cache)
@@ -644,22 +657,65 @@ def github_search(query: str, limit: int = 8) -> list[dict[str, Any]]:
     return output
 
 
+def search_local_resources(query: str) -> dict[str, Any]:
+    paths = config_paths()
+    catalog = load_catalog(paths["catalog"])["resources"]
+    records = load_manifest(paths["manifest"])["resources"]
+    query_terms = re.findall(r"\w+", query.casefold())
+
+    def matches(*values: Any) -> bool:
+        haystack = " ".join(str(value).casefold() for value in values)
+        return all(term in haystack for term in query_terms)
+
+    local_catalog = [item for item in catalog if matches(item)]
+    catalog_matches = {item["id"] for item in local_catalog}
+    installed_matches = []
+    managed_paths = set()
+    for record in records:
+        raw_path = record.get("installation_path")
+        if record.get("status") not in {"installed", "verified"} or not isinstance(raw_path, str) or not raw_path:
+            continue
+        path = Path(raw_path)
+        if path.is_symlink() or not path.is_file():
+            continue
+        managed_paths.add(path.absolute())
+        if record.get("id") in catalog_matches or matches(record):
+            installed_matches.append(record)
+
+    root = paths["library"]
+    library_matches = []
+    if root.is_dir():
+        for path in sorted(root.rglob("*")):
+            if path.suffix.lower() not in LIBRARY_SUFFIXES or path.absolute() in managed_paths:
+                continue
+            relative_path = path.relative_to(root)
+            if matches(relative_path) and not path.is_symlink() and path.is_file():
+                library_matches.append({"path": str(path), "relative_path": str(relative_path)})
+    return {
+        "installed_matches": installed_matches,
+        "library_matches": library_matches,
+        "local_catalog": local_catalog,
+    }
+
+
 def cmd_search(args: argparse.Namespace) -> None:
-    catalog = load_catalog()
-    query_terms = args.query.casefold().split()
-    matches = []
-    for item in catalog["resources"]:
-        haystack = " ".join(str(item.get(k, "")) for k in ("id", "name", "application", "category", "description", "license", "notes", "status")).casefold()
-        if all(term in haystack for term in query_terms):
-            matches.append(item)
-    result: dict[str, Any] = {"local_catalog": matches}
+    result = search_local_resources(args.query)
     if args.online:
         result["github_candidates"] = github_search(args.query)
     if args.json:
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return
-    print(f"Local catalog: {len(matches)} match(es)")
-    for item in matches:
+    installed_matches = result["installed_matches"]
+    print(f"Installed matches: {len(installed_matches)}")
+    for record in installed_matches:
+        print(f"- {record.get('id')} [{record['status']}] {record['installation_path']}")
+    library_matches = result["library_matches"]
+    print(f"Other library files: {len(library_matches)} (matched by path, review provenance before use)")
+    for entry in library_matches:
+        print(f"- {entry['path']}")
+    local_catalog = result["local_catalog"]
+    print(f"Local catalog: {len(local_catalog)} match(es)")
+    for item in local_catalog:
         print(f"- {item['id']} [{item.get('status', 'discovered')}] {item['name']} — {item.get('license', 'license unresolved')}")
         if item.get("notes"):
             print(f"  {item['notes']}")
@@ -710,7 +766,6 @@ def verify_record(item: dict[str, Any], *, app_smoke: bool = False) -> dict[str,
     result["checks"]["exists"] = "passed"
     result["checks"]["sha256"] = "passed" if observed == item.get("sha256") else "failed"
     try:
-        synthetic = {"resource_type": item.get("resource_type")}
         if item.get("resource_type") == "krita_bundle":
             format_data = validate_bundle(path)
         elif item.get("resource_type") == "cube_lut":
@@ -745,9 +800,6 @@ def cmd_verify(args: argparse.Namespace) -> None:
         ffmpeg_check = result["checks"].get("ffmpeg_lut_smoke")
         if ffmpeg_check and isinstance(ffmpeg_check, dict):
             item["validation_results"]["ffmpeg_lut_smoke"] = {"status": ffmpeg_check.get("status"), "details": ffmpeg_check, "timestamp": utc_now()}
-            item["validation_results"]["application_runtime"] = {"status": "pending", "details": "FFmpeg filter smoke passed; Kdenlive application-level effect and export test is still required", "timestamp": utc_now()}
-        elif args.app_smoke and item.get("resource_type") == "krita_bundle":
-            item["validation_results"]["application_runtime"] = {"status": "pending", "details": "A valid bundle archive still needs import and visibility confirmation in Krita", "timestamp": utc_now()}
     if selected:
         save_manifest(manifest)
     print(json.dumps(results, indent=2, ensure_ascii=False) if args.json else "\n".join(f"{r['id']}: {r['checks']}" for r in results))
@@ -870,7 +922,7 @@ def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="media-assets", description="Discover and manage legally reviewed creative assets")
     parser.add_argument("--version", action="version", version=f"media-assets {VERSION}")
     sub = parser.add_subparsers(dest="command", required=True)
-    p = sub.add_parser("search", help="Search the local catalog and optionally GitHub repository metadata")
+    p = sub.add_parser("search", help="Search installed resources, library files, and catalog candidates")
     p.add_argument("query")
     p.add_argument("--online", action="store_true", help="Add GitHub repository candidates; these remain unverified")
     p.add_argument("--json", action="store_true")

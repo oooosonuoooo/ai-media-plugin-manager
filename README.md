@@ -48,7 +48,9 @@ media-assets repair <catalog-id>
 media-assets cleanup
 ```
 
-Online search returns GitHub repository metadata only. It does not establish the license of individual files or make a result installable. Add an asset to the installable catalog only after reviewing its exact license, provenance, compatibility, file type, size, source pin, and install target.
+Search shows matching installed records, other files found by path in the configured creative library, and catalog candidates. Use `--json` for the same groups in a machine-readable result. Review provenance and compatibility before using a file found only by path.
+
+Online search adds GitHub repository metadata. Review the exact license, provenance, compatibility, file type, size, source pin, and install target before making an asset installable.
 
 The default install flow asks for confirmation. `cleanup` is a dry run unless both `--apply` and `--yes` are supplied. Updating backs up the previous manager-owned file before replacing it. Existing unrelated files are never overwritten or deleted.
 

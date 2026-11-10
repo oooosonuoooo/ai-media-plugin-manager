@@ -10,7 +10,7 @@ Use this skill before a creative task when a missing resource could materially i
 ## Workflow
 
 1. Identify the task's needed capability and supported formats.
-2. Inspect the existing editors, resource folders, and local catalog first. Reuse installed resources where possible.
+2. Run `media-assets search "<capability>"` to check installed records, files in the creative library, and catalog candidates in that order. Use `media-assets list` for editor resource locations. Reuse an installed match after checking its validation and license. A file found by path still needs provenance and compatibility review.
 3. Search official application resources and maintainer sources before broader community sources. Search online with `media-assets search "<capability>" --online` when the local catalog is insufficient.
 4. Check the individual asset's license, commercial-use terms, attribution, source, version, file hash, editor compatibility, dependencies, and size. A repository license does not automatically cover every asset in it.
 5. Install only a catalog item marked installable with verified license and compatibility. The CLI refuses unreviewed items, insecure URLs, unsafe file types, hash mismatches, and overwrites by default.

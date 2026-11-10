@@ -1,5 +1,6 @@
 import io
 import json
+import subprocess
 import tempfile
 import unittest
 import zipfile
@@ -12,6 +13,41 @@ from unittest.mock import patch
 from scripts import media_assets as manager
 
 FULL_COMMIT = "a" * 40
+
+
+class LauncherAndDiscoveryTests(unittest.TestCase):
+    def test_installed_symlink_runs_the_cli_from_another_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            launcher = Path(tmp) / "media-assets"
+            launcher.symlink_to(manager.REPO_ROOT / "scripts" / "media-assets")
+            output = subprocess.check_output([str(launcher), "--version"], cwd=tmp, text=True)
+        self.assertEqual(output.strip(), f"media-assets {manager.VERSION}")
+
+    def test_search_distinguishes_installed_files_from_catalog_and_library(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            installed = root / "live.cube"
+            installed.touch()
+            template = root / "logo-reveal.rawr"
+            template.touch()
+            catalog = {"resources": [
+                {"id": "live", "category": "logo reveal"},
+                {"id": "missing", "category": "logo reveal"},
+            ]}
+            manifest = {"resources": [
+                {"id": "live", "status": "verified", "installation_path": str(installed)},
+                {"id": "missing", "status": "verified", "installation_path": str(root / "missing.cube")},
+            ]}
+            paths = {"library": root, "catalog": root / "catalog.json", "manifest": root / "installed.json"}
+            with (
+                patch.object(manager, "config_paths", return_value=paths),
+                patch.object(manager, "load_catalog", return_value=catalog),
+                patch.object(manager, "load_manifest", return_value=manifest),
+            ):
+                result = manager.search_local_resources("logo reveal")
+        self.assertEqual([item["id"] for item in result["installed_matches"]], ["live"])
+        self.assertEqual([item["relative_path"] for item in result["library_matches"]], [template.name])
+        self.assertEqual([item["id"] for item in result["local_catalog"]], ["live", "missing"])
 
 
 class SafePathTests(unittest.TestCase):
@@ -115,8 +151,53 @@ class CubeValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(manager.ManagerError, "non-finite"):
                 manager.validate_cube(path)
 
+    def test_rejects_noninteger_lut_dimension(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bad.cube"
+            path.write_text("LUT_3D_SIZE large\n", encoding="utf-8")
+            with self.assertRaisesRegex(manager.ManagerError, "must be an integer"):
+                manager.validate_cube(path)
+
 
 class BundleValidationTests(unittest.TestCase):
+    def test_install_replaces_modified_extracted_cache_with_archive_member(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache_dir = root / "state" / "cache" / "test-bundle"
+            cache_dir.mkdir(parents=True)
+            original = io.BytesIO()
+            with zipfile.ZipFile(original, "w") as bundle:
+                bundle.writestr("paintoppresets/original.kpp", b"original")
+            archive = cache_dir / "1-pack.zip"
+            with zipfile.ZipFile(archive, "w") as pack:
+                pack.writestr("test.bundle", original.getvalue())
+            archive_hash = manager.sha256_file(archive)
+            extracted = cache_dir / f"1-{archive_hash[:16]}-test.bundle"
+            with zipfile.ZipFile(extracted, "w") as bundle:
+                bundle.writestr("paintoppresets/modified.kpp", b"modified")
+            paths = {
+                "home": root, "library": root / "library", "manifest": root / "installed.json",
+                "state": root / "state", "catalog": root / "catalog.json", "settings": {},
+            }
+            item = {
+                "id": "test-bundle", "name": "Test Bundle", "version": "1",
+                "installable": True, "license": "CC0-1.0", "license_status": "verified",
+                "compatibility_status": "verified", "filename": "pack.zip",
+                "archive_member": "test.bundle", "installed_filename": "test.bundle",
+                "resource_type": "krita_bundle_archive", "installed_resource_type": "krita_bundle",
+                "install_target": "studio:krita/bundles", "expected_sha256": archive_hash,
+                "download_url": f"https://raw.githubusercontent.com/x/y/{FULL_COMMIT}/pack.zip",
+                "source_commit": FULL_COMMIT,
+            }
+            with (
+                patch.object(manager, "config_paths", return_value=paths),
+                patch.object(manager, "check_storage_budget"),
+                redirect_stdout(StringIO()),
+            ):
+                record = manager.install_item(item, yes=True)
+            self.assertEqual(Path(record["installation_path"]).read_bytes(), original.getvalue())
+            self.assertEqual(extracted.read_bytes(), original.getvalue())
+
     def test_validates_bundle_archive_member(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "pack.zip"
@@ -411,7 +492,7 @@ class ManifestSafetyTests(unittest.TestCase):
             self.assertEqual(status, 2)
             self.assertIn('"sha256": "failed"', output.getvalue())
 
-    def test_plain_verify_does_not_erase_application_runtime_result(self):
+    def test_verify_does_not_erase_application_runtime_result(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             resource = root / "bundle.bundle"
@@ -425,11 +506,12 @@ class ManifestSafetyTests(unittest.TestCase):
             }]}), encoding="utf-8")
             paths = {"home": root, "library": root / "library", "manifest": manifest_path,
                      "state": root / "state", "catalog": root / "catalog.json", "settings": {}}
-            with patch.object(manager, "config_paths", return_value=paths), redirect_stdout(StringIO()):
-                status = manager.main(["verify", "safe-resource", "--json"])
-            saved = json.loads(manifest_path.read_text(encoding="utf-8"))
-            self.assertEqual(status, 0)
-            self.assertEqual(saved["resources"][0]["validation_results"]["application_runtime"]["status"], "passed")
+            for options in ([], ["--app-smoke"]):
+                with patch.object(manager, "config_paths", return_value=paths), redirect_stdout(StringIO()):
+                    status = manager.main(["verify", "safe-resource", "--json", *options])
+                saved = json.loads(manifest_path.read_text(encoding="utf-8"))
+                self.assertEqual(status, 0)
+                self.assertEqual(saved["resources"][0]["validation_results"]["application_runtime"]["status"], "passed")
 
 
 if __name__ == "__main__":
