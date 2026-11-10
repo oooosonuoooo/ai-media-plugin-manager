@@ -468,7 +468,13 @@ def validate_bundle_archive(path: Path, expected_member: str, *, max_uncompresse
     return {"format": "krita_bundle_zip", "archive_member": expected_member, "bundle_bytes": len(payload), "bundle_members": len(bundle.namelist()), "uncompressed_bytes": total}
 
 
-def validate_lottie_json(path: Path, *, max_bytes: int = 1_000_000, max_frames: int = 1800) -> dict[str, Any]:
+def validate_lottie_json(
+    path: Path,
+    *,
+    max_bytes: int = 1_000_000,
+    max_frames: int = 1800,
+    max_duration_seconds: float = 30.0,
+) -> dict[str, Any]:
     """Validate a bounded, self-contained Lottie JSON animation without executing expressions."""
     if not path.is_file() or path.stat().st_size == 0:
         raise ManagerError("Lottie JSON file is missing or empty")
@@ -512,6 +518,9 @@ def validate_lottie_json(path: Path, *, max_bytes: int = 1_000_000, max_frames: 
         raise ManagerError("Lottie in/out frames must be finite, non-negative, and ordered")
     if out_frame - in_frame > max_frames:
         raise ManagerError(f"Lottie duration exceeds the {max_frames}-frame inspection limit")
+    duration_seconds = (out_frame - in_frame) / frame_rate
+    if duration_seconds > max_duration_seconds:
+        raise ManagerError(f"Lottie duration exceeds the {max_duration_seconds:g}-second inspection limit")
     if not isinstance(layers, list) or not layers or len(layers) > 2000 or any(not isinstance(layer, dict) for layer in layers):
         raise ManagerError("Lottie layers must be a non-empty list of objects (maximum 2000)")
     if not isinstance(assets, list) or len(assets) > 2000 or any(not isinstance(asset, dict) for asset in assets):
@@ -542,7 +551,7 @@ def validate_lottie_json(path: Path, *, max_bytes: int = 1_000_000, max_frames: 
         "height": height,
         "frame_rate": frame_rate,
         "frames": out_frame - in_frame,
-        "duration_seconds": round((out_frame - in_frame) / frame_rate, 6),
+        "duration_seconds": round(duration_seconds, 6),
         "layers": len(layers),
         "assets": len(assets),
         "external_image_paths": 0,
@@ -555,7 +564,12 @@ def validate_resource_file(item: dict[str, Any], path: Path) -> dict[str, Any]:
     if resource_type == "cube_lut":
         return validate_cube(path)
     if resource_type == "lottie_json":
-        return validate_lottie_json(path, max_bytes=int(item.get("max_download_bytes", 1_000_000)), max_frames=int(item.get("max_lottie_frames", 1800)))
+        return validate_lottie_json(
+            path,
+            max_bytes=int(item.get("max_download_bytes", 1_000_000)),
+            max_frames=int(item.get("max_lottie_frames", 1800)),
+            max_duration_seconds=float(item.get("max_lottie_duration_seconds", 30.0)),
+        )
     if resource_type == "krita_bundle":
         return validate_bundle(path, max_uncompressed_bytes=int(item.get("max_uncompressed_bytes", 100_000_000)))
     if resource_type == "krita_bundle_archive":
@@ -766,6 +780,7 @@ def install_item(item: dict[str, Any], *, yes: bool = False, replace: bool = Fal
         "attribution_required": item.get("attribution_required"),
         "attribution": item.get("attribution"),
         "ai_use_restrictions": item.get("ai_use_restrictions"),
+        **{key: item[key] for key in ("max_download_bytes", "max_lottie_frames", "max_lottie_duration_seconds") if key in item},
         "sha256": installed_hash,
         "hash_source": "published_archive_hash_plus_extracted_asset_hash" if download_meta["expected_hash_published"] and item.get("archive_member") else ("published" if download_meta["expected_hash_published"] else "calculated_after_https_download"),
         "download_archive_sha256": download_meta["sha256"] if item.get("archive_member") else None,
@@ -985,22 +1000,91 @@ def cmd_install(args: argparse.Namespace) -> None:
     install_item(item, yes=args.yes, replace=args.replace)
 
 
+def mlt_lottie_smoke(item: dict[str, Any], path: Path) -> dict[str, Any]:
+    tools = {name: shutil.which(name) for name in ("melt", "ffprobe", "ffmpeg")}
+    missing = [name for name, executable in tools.items() if not executable]
+    if missing:
+        return {"status": "unavailable", "reason": f"Required render tools are missing: {', '.join(missing)}"}
+    try:
+        animation = validate_lottie_json(
+            path,
+            max_bytes=int(item.get("max_download_bytes", 1_000_000)),
+            max_frames=int(item.get("max_lottie_frames", 1800)),
+            max_duration_seconds=float(item.get("max_lottie_duration_seconds", 30.0)),
+        )
+    except (ManagerError, OSError) as exc:
+        return {"status": "failed", "reason": f"Lottie format check failed: {exc}"}
+
+    # Keep verification bounded and CPU-only: one thread, PAL profile, and at most five seconds.
+    render_frames = max(2, min(125, math.ceil(animation["duration_seconds"] * 25)))
+    with tempfile.TemporaryDirectory(prefix="media-assets-lottie-smoke-") as temp_dir:
+        output_path = Path(temp_dir) / "lottie-smoke.mov"
+        render = [
+            tools["melt"], "-profile", "dv_pal", f"glaxnimate:{path}", "in=0", f"out={render_frames - 1}",
+            "-consumer", f"avformat:{output_path}", "vcodec=qtrle", "pix_fmt=argb", "an=1", "real_time=-1", "threads=1",
+        ]
+        try:
+            rendered = subprocess.run(render, capture_output=True, text=True, timeout=60, check=False)
+            if rendered.returncode or not output_path.is_file() or output_path.stat().st_size == 0:
+                return {"status": "failed", "reason": "MLT Glaxnimate producer did not create a rendered video", "returncode": rendered.returncode, "stderr": rendered.stderr[-1000:]}
+            probe = subprocess.run(
+                [tools["ffprobe"], "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name,width,height,pix_fmt,nb_frames,avg_frame_rate", "-of", "json", str(output_path)],
+                capture_output=True, text=True, timeout=30, check=False,
+            )
+            if probe.returncode:
+                return {"status": "failed", "reason": "ffprobe rejected the MLT render", "stderr": probe.stderr[-1000:]}
+            stream = next((entry for entry in json.loads(probe.stdout).get("streams", []) if entry.get("codec_type", "video") == "video"), None)
+            pixel_format = str(stream.get("pix_fmt", "")) if stream else ""
+            has_alpha = pixel_format in {"argb", "rgba", "bgra", "abgr", "ya8", "ya16be", "ya16le"} or pixel_format.startswith("yuva")
+            if not stream or not has_alpha:
+                return {"status": "failed", "reason": "MLT render has no alpha-capable video stream", "stream": stream}
+            try:
+                width, height = int(stream["width"]), int(stream["height"])
+                frames = int(stream.get("nb_frames", 0))
+            except (KeyError, TypeError, ValueError):
+                return {"status": "failed", "reason": "ffprobe returned incomplete video stream metadata", "stream": stream}
+            if width < 1 or height < 1 or stream.get("codec_name") != "qtrle" or frames < 1:
+                return {"status": "failed", "reason": "MLT render has an unexpected codec or no frames", "stream": stream}
+            decoded = subprocess.run([tools["ffmpeg"], "-v", "error", "-i", str(output_path), "-f", "null", "-"], capture_output=True, text=True, timeout=45, check=False)
+            if decoded.returncode:
+                return {"status": "failed", "reason": "FFmpeg could not fully decode the MLT render", "stderr": decoded.stderr[-1000:]}
+            midpoint = animation["duration_seconds"] / 2
+            sample = subprocess.run(
+                [tools["ffmpeg"], "-v", "error", "-ss", f"{midpoint:.6f}", "-i", str(output_path), "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgba", "-"],
+                capture_output=True, timeout=30, check=False,
+            )
+            expected_bytes = width * height * 4
+            if sample.returncode or len(sample.stdout) != expected_bytes or not any(sample.stdout[3::4]):
+                return {"status": "failed", "reason": "The sampled rendered frame is missing or fully transparent", "stderr": sample.stderr.decode("utf-8", "replace")[-1000:]}
+            return {
+                "status": "passed",
+                "producer": "MLT glaxnimate",
+                "profile": "dv_pal",
+                "frames": frames,
+                "codec": stream["codec_name"],
+                "pixel_format": stream["pix_fmt"],
+                "frame_rate": stream.get("avg_frame_rate"),
+                "sampled_midframe_alpha": "visible",
+                "full_ffmpeg_decode": "passed",
+                "render_seconds": animation["duration_seconds"],
+            }
+        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError, ValueError) as exc:
+            return {"status": "failed", "reason": f"Lottie MLT smoke test could not complete: {exc}"}
+
+
 def verify_record(item: dict[str, Any], *, app_smoke: bool = False) -> dict[str, Any]:
     path = Path(item.get("installation_path", ""))
     result: dict[str, Any] = {"id": item.get("id"), "path": str(path), "checks": {}}
-    if not path.is_file():
+    if path.is_symlink() or not path.is_file():
         result["checks"]["exists"] = "failed"
+        if path.is_symlink():
+            result["checks"]["existence_reason"] = "symbolic links are not accepted for manager-owned resources"
         return result
     observed = sha256_file(path)
     result["checks"]["exists"] = "passed"
     result["checks"]["sha256"] = "passed" if observed == item.get("sha256") else "failed"
     try:
-        if item.get("resource_type") == "krita_bundle":
-            format_data = validate_bundle(path)
-        elif item.get("resource_type") == "cube_lut":
-            format_data = validate_cube(path)
-        else:
-            format_data = {"bytes": path.stat().st_size}
+        format_data = validate_resource_file(item, path)
         result["checks"]["format_integrity"] = {"status": "passed", **format_data}
     except (ManagerError, OSError, UnicodeError, zipfile.BadZipFile) as exc:
         result["checks"]["format_integrity"] = {"status": "failed", "reason": str(exc)}
@@ -1013,6 +1097,11 @@ def verify_record(item: dict[str, Any], *, app_smoke: bool = False) -> dict[str,
             command = [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=gray:s=16x16:d=0.04", "-vf", filter_arg, "-frames:v", "1", "-f", "null", "-"]
             proc = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
             result["checks"]["ffmpeg_lut_smoke"] = {"status": "passed" if proc.returncode == 0 else "failed", "returncode": proc.returncode, "stderr": proc.stderr[-1000:]}
+    elif app_smoke and item.get("resource_type") == "lottie_json":
+        if result["checks"].get("format_integrity", {}).get("status") == "passed":
+            result["checks"]["mlt_lottie_smoke"] = mlt_lottie_smoke(item, path)
+        else:
+            result["checks"]["mlt_lottie_smoke"] = {"status": "not_run", "reason": "Lottie format validation failed"}
     elif app_smoke:
         result["checks"]["application_smoke"] = {"status": "not_run", "reason": "No automated editor-specific smoke test is registered for this resource type"}
     return result
@@ -1036,6 +1125,20 @@ def cmd_verify(args: argparse.Namespace) -> None:
         ffmpeg_check = result["checks"].get("ffmpeg_lut_smoke")
         if ffmpeg_check and isinstance(ffmpeg_check, dict):
             item["validation_results"]["ffmpeg_lut_smoke"] = {"status": ffmpeg_check.get("status"), "details": ffmpeg_check, "timestamp": utc_now()}
+        if item.get("resource_type") == "lottie_json":
+            lottie_check = result["checks"].get("mlt_lottie_smoke")
+            format_check = result["checks"].get("format_integrity", {})
+            hash_check = result["checks"].get("sha256")
+            if isinstance(lottie_check, dict):
+                item["validation_results"]["mlt_lottie_smoke"] = {"status": lottie_check.get("status"), "details": lottie_check, "timestamp": utc_now()}
+                if lottie_check.get("status") == "passed":
+                    item["status"] = "verified"
+                    item["validation_results"]["application_runtime"] = {"status": "passed", "details": lottie_check, "timestamp": utc_now()}
+                elif lottie_check.get("status") == "failed":
+                    item["status"] = "failed"
+                    item["validation_results"]["application_runtime"] = {"status": "failed", "details": lottie_check, "timestamp": utc_now()}
+            elif format_check.get("status") == "failed" or hash_check == "failed" or result["checks"].get("exists") == "failed":
+                item["status"] = "failed"
     if manager_selected:
         save_manifest(manifest)
     results = manager_results + indexed_results

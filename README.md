@@ -62,7 +62,7 @@ The default install flow asks for confirmation. `cleanup` is a dry run unless bo
 
 ## Kdenlive Lottie animations
 
-The manager can catalog individual, pinned Lottie JSON animations in the shared `kdenlive/motion-graphics` library. The Lottie validator bounds file size, canvas dimensions, frame rate, duration, and JSON complexity; it rejects expression strings and external image paths. It does not execute downloaded code. The selected useAnimations entries retain the upstream MIT license notice beside the JSON files.
+The manager can catalog individual, pinned Lottie JSON animations in the shared `kdenlive/motion-graphics` library. The Lottie validator bounds file size, canvas dimensions, frame rate, duration (up to 30 seconds), and JSON complexity; it rejects expression strings and external image paths. It does not execute downloaded code. The selected useAnimations entries retain the upstream MIT license notice beside the JSON files.
 
 Kdenlive's 26.08 manual documents JSON (Lottie) and Glaxnimate `.rawr` support, with alpha for timeline overlays. Create or import animations through the project bin, then render a short disposable clip to confirm the exact project and animation. The manager's MLT format/render checks do not replace that GUI project-bin check. See [Kdenlive's animation documentation](https://docs.kdenlive.org/en/project_and_asset_management/project_bin/animation.html) and [resource integration notes](references/resource-integration.md).
 
@@ -71,7 +71,7 @@ Example:
 ```sh
 media-assets search "animated icon"
 media-assets install useanimations-lottie-checkmark
-media-assets verify useanimations-lottie-checkmark
+media-assets verify useanimations-lottie-checkmark --app-smoke
 ```
 
 ## Catalog and provenance

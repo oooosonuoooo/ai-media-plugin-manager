@@ -563,7 +563,8 @@
       "tested_application_versions": ["Kdenlive 26.08.2 / MLT 7.42.0"],
       "max_download_bytes": 25000,
       "max_lottie_frames": 1800,
-      "runtime_test_note": "Validate JSON bounds, render all frames through the installed MLT glaxnimate producer, decode the output, and inspect sampled frames."
+      "runtime_test_note": "Validate JSON bounds, render all frames through the installed MLT glaxnimate producer, decode the output, and inspect sampled frames.",
+      "max_lottie_duration_seconds": 30
     },
     {
       "id": "useanimations-lottie-arrowdown",
@@ -598,7 +599,8 @@
       "tested_application_versions": ["Kdenlive 26.08.2 / MLT 7.42.0"],
       "max_download_bytes": 25000,
       "max_lottie_frames": 1800,
-      "runtime_test_note": "Validate JSON bounds, render all frames through the installed MLT glaxnimate producer, decode the output, and inspect sampled frames."
+      "runtime_test_note": "Validate JSON bounds, render all frames through the installed MLT glaxnimate producer, decode the output, and inspect sampled frames.",
+      "max_lottie_duration_seconds": 30
     },
     {
       "id": "useanimations-lottie-heart",
@@ -633,7 +635,8 @@
       "tested_application_versions": ["Kdenlive 26.08.2 / MLT 7.42.0"],
       "max_download_bytes": 25000,
       "max_lottie_frames": 1800,
-      "runtime_test_note": "Validate JSON bounds, render all frames through the installed MLT glaxnimate producer, decode the output, and inspect sampled frames."
+      "runtime_test_note": "Validate JSON bounds, render all frames through the installed MLT glaxnimate producer, decode the output, and inspect sampled frames.",
+      "max_lottie_duration_seconds": 30
     },
     {
       "id": "useanimations-lottie-loading",
@@ -668,7 +671,8 @@
       "tested_application_versions": ["Kdenlive 26.08.2 / MLT 7.42.0"],
       "max_download_bytes": 25000,
       "max_lottie_frames": 1800,
-      "runtime_test_note": "Validate JSON bounds, render all frames through the installed MLT glaxnimate producer, decode the output, and inspect sampled frames."
+      "runtime_test_note": "Validate JSON bounds, render all frames through the installed MLT glaxnimate producer, decode the output, and inspect sampled frames.",
+      "max_lottie_duration_seconds": 30
     },
     {
       "id": "useanimations-lottie-playpause",
@@ -703,7 +707,8 @@
       "tested_application_versions": ["Kdenlive 26.08.2 / MLT 7.42.0"],
       "max_download_bytes": 25000,
       "max_lottie_frames": 1800,
-      "runtime_test_note": "Validate JSON bounds, render all frames through the installed MLT glaxnimate producer, decode the output, and inspect sampled frames."
+      "runtime_test_note": "Validate JSON bounds, render all frames through the installed MLT glaxnimate producer, decode the output, and inspect sampled frames.",
+      "max_lottie_duration_seconds": 30
     },
     {
       "id": "useanimations-lottie-activity",
@@ -738,7 +743,8 @@
       "tested_application_versions": ["Kdenlive 26.08.2 / MLT 7.42.0"],
       "max_download_bytes": 25000,
       "max_lottie_frames": 1800,
-      "runtime_test_note": "Validate JSON bounds, render all frames through the installed MLT glaxnimate producer, decode the output, and inspect sampled frames."
+      "runtime_test_note": "Validate JSON bounds, render all frames through the installed MLT glaxnimate producer, decode the output, and inspect sampled frames.",
+      "max_lottie_duration_seconds": 30
     },
     {
       "id": "stripedpurple-color-grading-luts",

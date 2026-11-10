@@ -346,6 +346,58 @@ class LottieValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(manager.ManagerError, "frame rate"):
                 manager.validate_lottie_json(path)
 
+    def test_verify_record_revalidates_lottie_structure_even_when_hash_matches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "animation.json"
+            self.write_lottie(path)
+            record = {"id": "animation", "resource_type": "lottie_json", "installation_path": str(path), "sha256": manager.sha256_file(path)}
+            valid = manager.verify_record(record)
+            self.assertEqual(valid["checks"]["format_integrity"]["status"], "passed")
+            path.write_text("{invalid", encoding="utf-8")
+            record["sha256"] = manager.sha256_file(path)
+            invalid = manager.verify_record(record)
+            self.assertEqual(invalid["checks"]["sha256"], "passed")
+            self.assertEqual(invalid["checks"]["format_integrity"]["status"], "failed")
+
+    def test_mlt_lottie_app_smoke_checks_alpha_and_full_decode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "animation.json"
+            self.write_lottie(path)
+            record = {"id": "animation", "resource_type": "lottie_json", "installation_path": str(path), "sha256": manager.sha256_file(path)}
+
+            def fake_run(command, **kwargs):
+                command_name = Path(command[0]).name
+                if command_name == "melt":
+                    output = next(arg.removeprefix("avformat:") for arg in command if arg.startswith("avformat:"))
+                    Path(output).write_bytes(b"fixture render")
+                    return subprocess.CompletedProcess(command, 0, "", "")
+                if command_name == "ffprobe":
+                    stream = {"codec_type": "video", "codec_name": "qtrle", "width": 720, "height": 576, "pix_fmt": "argb", "nb_frames": "38", "avg_frame_rate": "25/1"}
+                    return subprocess.CompletedProcess(command, 0, json.dumps({"streams": [stream]}), "")
+                if "-pix_fmt" in command:
+                    frame = bytearray(720 * 576 * 4)
+                    frame[3::4] = bytes([255]) * (720 * 576)
+                    return subprocess.CompletedProcess(command, 0, bytes(frame), b"")
+                return subprocess.CompletedProcess(command, 0, b"", b"")
+
+            with patch.object(manager.shutil, "which", side_effect=lambda name: f"/usr/bin/{name}"), patch.object(manager.subprocess, "run", side_effect=fake_run):
+                result = manager.verify_record(record, app_smoke=True)
+        smoke = result["checks"]["mlt_lottie_smoke"]
+        self.assertEqual(smoke["status"], "passed", smoke)
+        self.assertEqual(smoke["sampled_midframe_alpha"], "visible")
+        self.assertEqual(smoke["full_ffmpeg_decode"], "passed")
+
+    def test_mlt_lottie_app_smoke_reports_missing_tools_as_unavailable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "animation.json"
+            self.write_lottie(path)
+            record = {"id": "animation", "resource_type": "lottie_json", "installation_path": str(path), "sha256": manager.sha256_file(path)}
+            with patch.object(manager.shutil, "which", return_value=None):
+                result = manager.verify_record(record, app_smoke=True)
+        smoke = result["checks"]["mlt_lottie_smoke"]
+        self.assertEqual(smoke["status"], "unavailable")
+        self.assertIn("melt", smoke["reason"])
+
     def test_rejects_files_over_size_limit_and_oversized_duration(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "large.json"
@@ -354,6 +406,9 @@ class LottieValidationTests(unittest.TestCase):
                 manager.validate_lottie_json(path, max_bytes=10)
             self.write_lottie(path, op=2000)
             with self.assertRaisesRegex(manager.ManagerError, "frame inspection limit"):
+                manager.validate_lottie_json(path)
+            self.write_lottie(path, op=100, fr=1)
+            with self.assertRaisesRegex(manager.ManagerError, "30-second inspection limit"):
                 manager.validate_lottie_json(path)
 
 
