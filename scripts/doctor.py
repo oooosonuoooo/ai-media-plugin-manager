@@ -3,12 +3,80 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import shutil
 import subprocess
 import sys
+import urllib.parse
+import urllib.request
 from pathlib import Path
+
+
+DEFAULT_COMFYUI_URL = "http://127.0.0.1:8188"
+COMFYUI_TIMEOUT_SECONDS = 1.5
+COMFYUI_MAX_RESPONSE_BYTES = 1024 * 1024
+
+
+class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Keep the queue probe on its validated loopback endpoint."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def parse_comfyui_queue(payload: bytes) -> dict[str, str | int]:
+    response = json.loads(payload.decode("utf-8"))
+    if not isinstance(response, dict):
+        raise ValueError("ComfyUI queue response must be a JSON object")
+    running = response.get("queue_running")
+    pending = response.get("queue_pending")
+    if not isinstance(running, list) or not isinstance(pending, list):
+        raise ValueError("ComfyUI queue response is missing queue_running or queue_pending")
+    return {
+        "status": "busy" if running or pending else "idle",
+        "running": len(running),
+        "pending": len(pending),
+    }
+
+
+def comfyui_queue_status(base_url: str) -> dict[str, str | int | None]:
+    """Read the local ComfyUI queue without following redirects or waiting long."""
+    try:
+        if not isinstance(base_url, str):
+            raise ValueError("ComfyUI URL must be a string")
+        parsed = urllib.parse.urlsplit(base_url)
+        if parsed.scheme != "http" or parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+            raise ValueError("ComfyUI URL must be a plain HTTP loopback origin")
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("ComfyUI URL must not contain credentials")
+        hostname = parsed.hostname
+        if not hostname:
+            raise ValueError("ComfyUI URL must contain a loopback IP address")
+        address = ipaddress.ip_address(hostname)
+        if not address.is_loopback:
+            raise ValueError("ComfyUI URL must use a loopback IP address")
+        # Accessing .port also validates malformed/out-of-range port values.
+        parsed.port
+        request = urllib.request.Request(
+            base_url.rstrip("/") + "/queue",
+            headers={"Accept": "application/json"},
+            method="GET",
+        )
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirectHandler())
+        with opener.open(request, timeout=COMFYUI_TIMEOUT_SECONDS) as response:
+            payload = response.read(COMFYUI_MAX_RESPONSE_BYTES + 1)
+        if len(payload) > COMFYUI_MAX_RESPONSE_BYTES:
+            raise ValueError("ComfyUI queue response exceeded the size limit")
+        return parse_comfyui_queue(payload)
+    except (OSError, ValueError) as exc:
+        return {
+            "status": "unavailable",
+            "running": None,
+            "pending": None,
+            "error": str(exc)[:240],
+        }
 
 
 def command_version(command: str, args: list[str]) -> dict[str, str | bool]:
@@ -44,6 +112,9 @@ def main() -> int:
             "kdenlive": command_version("kdenlive", ["--version"]),
             "krita": command_version("krita", ["--version"]),
             "nvidia_smi": command_version("nvidia-smi", ["--query-gpu=name,memory.total,memory.free", "--format=csv,noheader"]),
+        },
+        "integrations": {
+            "comfyui_queue": comfyui_queue_status(config.get("comfyui_url", DEFAULT_COMFYUI_URL)),
         },
         "paths": {
             "library_root": str(library),

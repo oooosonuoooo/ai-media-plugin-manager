@@ -368,7 +368,9 @@ class CatalogTests(unittest.TestCase):
         catalog = manager.load_catalog(Path(__file__).parents[1] / "manifests/catalog.json")
         ids = [item["id"] for item in catalog["resources"]]
         self.assertEqual(len(ids), len(set(ids)))
+        allowed_statuses = {"discovered", "downloaded", "installed", "verified", "failed", "deferred", "unsupported"}
         for item in catalog["resources"]:
+            self.assertIn(item.get("status", "discovered"), allowed_statuses, item["id"])
             if item.get("installable"):
                 manager.validate_install_candidate(item)
 

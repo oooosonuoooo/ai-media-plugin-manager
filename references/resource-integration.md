@@ -19,7 +19,7 @@ Use the application-native resource path for each type. Catalog status and file 
 
 ## Local AI Media Studio
 
-- Inspect `media_health` before render or model tasks. Respect the configured GPU free-memory threshold and do not interrupt an active render or ComfyUI queue.
+- Inspect `media_health` and `media-assets doctor` before render or model tasks. The doctor makes a read-only, bounded request to ComfyUI's local queue API; `busy` means defer work that could compete for GPU resources. Recheck immediately before starting because queue state can change. Respect the configured GPU free-memory threshold and do not interrupt an active render or ComfyUI queue.
 - Keep Studio outputs and project media under its configured workspace, and never modify source footage in place.
 - For tasks requiring a new resource, search the local catalog first, then continue the original task after installation and validation.
 

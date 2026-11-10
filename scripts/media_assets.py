@@ -1081,7 +1081,7 @@ def make_parser() -> argparse.ArgumentParser:
     p.add_argument("--online", action="store_true", help="Add GitHub repository candidates; these remain unverified")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_search)
-    p = sub.add_parser("catalog", help="Show discovered, deferred, and unsupported candidates")
+    p = sub.add_parser("catalog", help="Show catalog resources and their current statuses")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_catalog)
     p = sub.add_parser("list", help="List manager-tracked resources and detect editor resource roots")

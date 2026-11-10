@@ -32,6 +32,8 @@ Optionally set a local library root in `~/.config/ai-media-plugin-manager/config
 }
 ```
 
+The read-only doctor check also queries ComfyUI's local `/queue` endpoint, using a 1.5-second timeout. Set `comfyui_url` only to a loopback IP origin such as `http://127.0.0.1:8188`; redirects and remote hosts are rejected. An unavailable ComfyUI endpoint is reported without failing the core editor dependency check.
+
 This file is machine-specific and should not be committed. Environment variables `MEDIA_ASSET_LIBRARY`, `MEDIA_ASSET_MANIFEST`, `MEDIA_ASSET_STATE`, `MEDIA_ASSET_INDEX`, and `MEDIA_ASSET_CATALOG` override the corresponding paths.
 
 Resources installed outside this manager can be indexed separately at `~/.local/share/ai-media-plugin-manager/local-inventory.json` (override with `MEDIA_ASSET_INDEX` or the local config key `index_manifest`). Use a `resources` array with `id`, `name`, `status`, provenance/license fields, and either `installation_path` or `files: [{"path": "...", "sha256": "..."}]`. `search` and `list` expose these records; `verify` checks file presence and any recorded hashes. These records are read-only: manager `update`, `repair`, and `cleanup` never treat them as manager-owned files. Missing license evidence stays unresolved, and an index entry does not authorize redistribution or automatic use.
@@ -59,7 +61,7 @@ The default install flow asks for confirmation. `cleanup` is a dry run unless bo
 
 ## Catalog and provenance
 
-`manifests/catalog.json` is a source catalog with `discovered`, `deferred`, and `unsupported` records. Each local installation is recorded outside the repository in the user's XDG data directory. The install record stores the name, version, author, source, license, commercial use, attribution, SHA-256, installation path, compatible applications, tested versions, installation time, update state, and validation outcomes.
+`manifests/catalog.json` is a source catalog with `discovered`, `deferred`, `installed`, `verified`, and `unsupported` statuses. Installed and verified statuses reflect the latest workstation evidence; files can change, so recheck integrity before use. Each manager-owned installation is also recorded outside the repository in the user's XDG data directory. The install record stores the name, version, author, source, license, commercial use, attribution, SHA-256, installation path, compatible applications, tested versions, installation time, update state, and validation outcomes.
 
 The manager distinguishes published checksums from hashes calculated after an HTTPS download. A calculated hash is useful for deduplication and later integrity checks, but it is not presented as an upstream checksum. Archive validation does not prove that an editor imported or can use the resource; record a separate application-level test before marking an item `verified`.
 
@@ -83,6 +85,8 @@ This project was developed against Krita 5.3.4.1, Kdenlive 26.08.2, MLT 7.42, an
 python3 -m unittest discover -s tests -v
 python3 scripts/doctor.py
 ```
+
+The doctor output includes `integrations.comfyui_queue` with `idle`/`busy` and running/pending counts, or `unavailable` when the local API cannot be read. This is a point-in-time check; query it again immediately before any GPU task.
 
 When available, validate the skill folder with the Codex `skill-creator` utility (`quick_validate.py <path-to-this-skill>`).
 
