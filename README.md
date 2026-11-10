@@ -16,12 +16,13 @@ The manager uses Python's standard library and does not run downloaded code. Ins
 Clone the repository, then install the command and skill in user-level directories:
 
 ```sh
-mkdir -p "$HOME/.local/bin" "$HOME/.codex/skills" "$HOME/.gemini/config/skills"
-ln -s "$(pwd)/scripts/media-assets" "$HOME/.local/bin/media-assets"
 python3 scripts/install_skill.py install
+python3 scripts/install_skill.py verify
 ```
 
-Add `$HOME/.local/bin` to `PATH` if it is not already there. The installer links the skill into Codex's user skill folder and Antigravity IDE's documented global folder, `~/.gemini/config/skills/`, and refuses to replace a real directory or a link pointing elsewhere. See [Google Antigravity's skill documentation](https://antigravity.google/docs/skills) for workspace and global discovery rules.
+The installer manages the `media-assets` command at `~/.local/bin/media-assets`, the Codex user skill, and Antigravity IDE's documented global skill folder, `~/.gemini/config/skills/`. It refuses to replace a real directory or a link pointing elsewhere. Use `repair` only when you want it to replace conflicting symbolic links; it still preserves real directories. `uninstall` removes only links that resolve to this checkout. Add `$HOME/.local/bin` to `PATH` if it is not already there. See [Google Antigravity's skill documentation](https://antigravity.google/docs/skills) for workspace and global discovery rules.
+
+Limit installation to a target with `--scope cli`, `--scope codex`, or `--scope antigravity`. `--scope both` manages the two skill links, while the default `--scope all` manages all three targets.
 
 Optionally set a local library root in `~/.config/ai-media-plugin-manager/config.json`:
 
