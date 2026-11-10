@@ -47,7 +47,144 @@ class LauncherAndDiscoveryTests(unittest.TestCase):
                 result = manager.search_local_resources("logo reveal")
         self.assertEqual([item["id"] for item in result["installed_matches"]], ["live"])
         self.assertEqual([item["relative_path"] for item in result["library_matches"]], [template.name])
-        self.assertEqual([item["id"] for item in result["local_catalog"]], ["live", "missing"])
+        self.assertEqual([item["id"] for item in result["local_catalog"]], ["missing"])
+
+    def test_search_returns_external_index_metadata_and_live_presence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            library = root / "library"
+            library.mkdir()
+            asset = library / "rnnoise.so"
+            asset.write_bytes(b"verified plugin fixture")
+            index_path = root / "local-inventory.json"
+            index_path.write_text(json.dumps({"schema_version": 1, "resources": [{
+                "id": "rnnoise-local",
+                "name": "RNNoise voice denoiser",
+                "status": "verified",
+                "application": "Kdenlive",
+                "license": "GPL-3.0",
+                "installation_path": str(asset),
+                "files": [{"path": str(asset), "sha256": manager.sha256_file(asset)}],
+            }]}), encoding="utf-8")
+            paths = {"library": root / "library", "catalog": root / "catalog.json", "manifest": root / "installed.json", "index": index_path}
+            with (
+                patch.object(manager, "config_paths", return_value=paths),
+                patch.object(manager, "load_catalog", return_value={"resources": []}),
+                patch.object(manager, "load_manifest", return_value={"resources": []}),
+            ):
+                result = manager.search_local_resources("Kdenlive GPL denoiser")
+        self.assertEqual([item["id"] for item in result["indexed_matches"]], ["rnnoise-local"])
+        self.assertEqual(result["indexed_matches"][0]["observed_presence"], "present")
+        self.assertEqual(result["indexed_matches"][0]["license"], "GPL-3.0")
+        self.assertEqual(result["library_matches"], [])
+
+    def test_search_does_not_list_an_indexed_resource_source_manifest_as_an_asset(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            library = root / "library" / "kdenlive" / "motion-graphics"
+            library.mkdir(parents=True)
+            source_manifest = library / "asset-manifest.json"
+            source_manifest.write_text("{}", encoding="utf-8")
+            index_path = root / "local-inventory.json"
+            inventory = {"resources": [{
+                "id": "motion-pack",
+                "name": "Motion graphics pack",
+                "status": "verified",
+                "installation_path": str(library),
+                "files": [],
+                "source_manifest": str(source_manifest),
+            }]}
+            paths = {"library": root / "library", "catalog": root / "catalog.json", "manifest": root / "installed.json", "index": index_path}
+            with (
+                patch.object(manager, "config_paths", return_value=paths),
+                patch.object(manager, "load_catalog", return_value={"resources": []}),
+                patch.object(manager, "load_manifest", return_value={"resources": []}),
+                patch.object(manager, "load_local_inventory", return_value=inventory),
+            ):
+                result = manager.search_local_resources("motion graphics")
+        self.assertEqual([item["id"] for item in result["indexed_matches"]], ["motion-pack"])
+        self.assertEqual(result["library_matches"], [])
+
+    def test_search_ignores_schema_keys_and_null_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inventory = {"resources": [{
+                "id": "krita-brushes",
+                "name": "AL Paint",
+                "application": "Krita",
+                "category": "brush bundle",
+                "template_count": None,
+            }]}
+            paths = {
+                "library": root,
+                "catalog": root / "catalog.json",
+                "manifest": root / "installed.json",
+                "index": root / "local-inventory.json",
+            }
+            with (
+                patch.object(manager, "config_paths", return_value=paths),
+                patch.object(manager, "load_catalog", return_value={"resources": []}),
+                patch.object(manager, "load_manifest", return_value={"resources": []}),
+                patch.object(manager, "load_local_inventory", return_value=inventory),
+            ):
+                result = manager.search_local_resources("Krita template")
+        self.assertEqual(result["indexed_matches"], [])
+
+    def test_external_inventory_path_can_be_overridden(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(manager.os.environ, {"XDG_DATA_HOME": tmp, "MEDIA_ASSET_INDEX": str(Path(tmp) / "custom.json")}):
+            self.assertEqual(manager.config_paths()["index"], Path(tmp) / "custom.json")
+
+
+class ExternalInventoryVerificationTests(unittest.TestCase):
+    def test_verify_reports_hash_and_presence_separately_for_nested_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            hashed = root / "with-hash.bin"
+            unhashed = root / "without-hash.bin"
+            hashed.write_bytes(b"known bytes")
+            unhashed.write_bytes(b"present but not pinned")
+            item = {
+                "id": "external-pack",
+                "files": [
+                    {"path": str(hashed), "sha256": manager.sha256_file(hashed)},
+                    {"path": str(unhashed), "sha256": None},
+                ],
+            }
+            result = manager.verify_indexed_record(item)
+        check = result["checks"]["file_integrity"]
+        self.assertEqual(check["status"], "unverified")
+        self.assertEqual(check["files_total"], 2)
+        self.assertEqual(check["entries"][0]["presence"], "passed")
+        self.assertEqual(check["entries"][0]["sha256"], "passed")
+        self.assertEqual(check["entries"][1]["presence"], "passed")
+        self.assertEqual(check["entries"][1]["sha256"], "not_recorded")
+
+    def test_verify_reads_external_index_without_saving_manager_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            asset = Path(tmp) / "external.bin"
+            asset.write_bytes(b"external bytes")
+            index = {"resources": [{
+                "id": "external-record",
+                "files": [{"path": str(asset), "sha256": manager.sha256_file(asset)}],
+            }]}
+            with (
+                patch.object(manager, "load_manifest", return_value={"resources": []}),
+                patch.object(manager, "load_local_inventory", return_value=index),
+                patch.object(manager, "save_manifest") as save_manifest,
+                redirect_stdout(StringIO()) as output,
+            ):
+                manager.cmd_verify(Namespace(asset_id="external-record", app_smoke=False, json=True))
+        save_manifest.assert_not_called()
+        self.assertIn('"status": "passed"', output.getvalue())
+
+    def test_cleanup_does_not_manage_external_inventory_records(self):
+        with (
+            patch.object(manager, "load_catalog", return_value={"resources": []}),
+            patch.object(manager, "load_manifest", return_value={"resources": []}),
+            redirect_stdout(StringIO()) as output,
+        ):
+            manager.cmd_cleanup(Namespace(asset_id=None, apply=False, yes=False))
+        self.assertIn("No manager-owned resources to clean up", output.getvalue())
 
 
 class SafePathTests(unittest.TestCase):

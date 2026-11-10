@@ -32,7 +32,9 @@ Optionally set a local library root in `~/.config/ai-media-plugin-manager/config
 }
 ```
 
-This file is machine-specific and should not be committed. Environment variables `MEDIA_ASSET_LIBRARY`, `MEDIA_ASSET_MANIFEST`, `MEDIA_ASSET_STATE`, and `MEDIA_ASSET_CATALOG` override the corresponding paths.
+This file is machine-specific and should not be committed. Environment variables `MEDIA_ASSET_LIBRARY`, `MEDIA_ASSET_MANIFEST`, `MEDIA_ASSET_STATE`, `MEDIA_ASSET_INDEX`, and `MEDIA_ASSET_CATALOG` override the corresponding paths.
+
+Resources installed outside this manager can be indexed separately at `~/.local/share/ai-media-plugin-manager/local-inventory.json` (override with `MEDIA_ASSET_INDEX` or the local config key `index_manifest`). Use a `resources` array with `id`, `name`, `status`, provenance/license fields, and either `installation_path` or `files: [{"path": "...", "sha256": "..."}]`. `search` and `list` expose these records; `verify` checks file presence and any recorded hashes. These records are read-only: manager `update`, `repair`, and `cleanup` never treat them as manager-owned files. Missing license evidence stays unresolved, and an index entry does not authorize redistribution or automatic use.
 
 ## Use
 
@@ -49,7 +51,7 @@ media-assets repair <catalog-id>
 media-assets cleanup
 ```
 
-Search shows matching installed records, other files found by path in the configured creative library, and catalog candidates. Use `--json` for the same groups in a machine-readable result. Review provenance and compatibility before using a file found only by path.
+Search shows matching manager-installed records, indexed external resources with their local metadata, other files found by path in the configured creative library, and catalog candidates. Use `--json` for the same groups in a machine-readable result. Review provenance and compatibility before using a file found only by path.
 
 Online search adds GitHub repository metadata. Review the exact license, provenance, compatibility, file type, size, source pin, and install target before making an asset installable.
 

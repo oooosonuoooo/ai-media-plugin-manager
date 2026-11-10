@@ -1,5 +1,6 @@
 {
   "library_root": "/path/to/AI-Video-Studio/Assets/Creative",
+  "index_manifest": "/path/to/local-inventory.json",
   "target_free_space_gb": 200,
   "minimum_free_space_gib": 100,
   "initial_download_budget_gib": 2,

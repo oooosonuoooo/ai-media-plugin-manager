@@ -10,7 +10,7 @@ Use this skill before a creative task when a missing resource could materially i
 ## Workflow
 
 1. Identify the task's needed capability and supported formats.
-2. Run `media-assets search "<capability>"` to check installed records, files in the creative library, and catalog candidates in that order. Use `media-assets list` for editor resource locations. Reuse an installed match after checking its validation and license. A file found by path still needs provenance and compatibility review.
+2. Run `media-assets search "<capability>"` to check manager-installed records, the machine-local indexed inventory, files in the creative library, and catalog candidates. Use `media-assets list` for editor resource locations. Reuse a verified match after checking its validation and license. A path-only file still needs provenance and compatibility review.
 3. Search official application resources and maintainer sources before broader community sources. Search online with `media-assets search "<capability>" --online` when the local catalog is insufficient.
 4. Check the individual asset's license, commercial-use terms, attribution, source, version, file hash, editor compatibility, dependencies, and size. A repository license does not automatically cover every asset in it.
 5. Install only a catalog item marked installable with verified license and compatibility. The CLI refuses unreviewed items, insecure URLs, unsafe file types, hash mismatches, and overwrites by default.
@@ -32,6 +32,8 @@ Run `media-assets --help` first. The CLI is standard-library Python and provides
 - `media-assets cleanup [id]`
 
 Install and update commands request confirmation unless `--yes` is supplied. Cleanup is a dry run unless `--apply --yes` is supplied. Never use those flags to bypass an unresolved license, compatibility, or security question.
+
+The optional `MEDIA_ASSET_INDEX` file defaults to `~/.local/share/ai-media-plugin-manager/local-inventory.json` and uses a top-level `resources` list. It records already-installed files the manager does not own, including their provenance, license, paths, hashes, compatibility, and test evidence. `search`, `list`, and `verify` read this inventory; a missing hash is reported as not recorded, and a missing file is reported as missing. Indexed resources are excluded from `update`, `repair`, and `cleanup`; only the manager's own install manifest is eligible for those operations.
 
 ## Resource-specific notes
 

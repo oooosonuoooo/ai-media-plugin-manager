@@ -79,8 +79,9 @@ def config_paths() -> dict[str, Any]:
     library = Path(os.environ.get("MEDIA_ASSET_LIBRARY", config.get("library_root", data_home / "ai-media-plugin-manager/assets"))).expanduser()
     manifest = Path(os.environ.get("MEDIA_ASSET_MANIFEST", config.get("manifest", data_home / "ai-media-plugin-manager/installed.json"))).expanduser()
     state = Path(os.environ.get("MEDIA_ASSET_STATE", config.get("state_root", data_home / "ai-media-plugin-manager"))).expanduser()
+    index = Path(os.environ.get("MEDIA_ASSET_INDEX", config.get("index_manifest", state / "local-inventory.json"))).expanduser()
     catalog = Path(os.environ.get("MEDIA_ASSET_CATALOG", REPO_ROOT / "manifests/catalog.json")).expanduser()
-    return {"home": home, "data_home": data_home, "library": library, "manifest": manifest, "state": state, "catalog": catalog, "settings": config}
+    return {"home": home, "data_home": data_home, "library": library, "manifest": manifest, "index": index, "state": state, "catalog": catalog, "settings": config}
 
 
 def load_json(path: Path, default: Any = None) -> Any:
@@ -134,6 +135,98 @@ def load_manifest(path: Path | None = None, *, create: bool = False) -> dict[str
     if not isinstance(data, dict) or not isinstance(data.get("resources"), list):
         raise ManagerError(f"Install manifest must contain a resources list: {manifest_path}")
     return data
+
+
+def load_local_inventory(path: Path | None = None) -> dict[str, Any]:
+    """Read the separate, machine-local index of assets the manager does not own."""
+    paths = config_paths()
+    inventory_path = path or paths.get("index") or (Path(paths["manifest"]).parent / "local-inventory.json")
+    data = load_json(inventory_path, {"schema_version": 1, "resources": []})
+    if not isinstance(data, dict) or not isinstance(data.get("resources"), list):
+        raise ManagerError(f"Local inventory must contain a resources list: {inventory_path}")
+    seen: set[str] = set()
+    for item in data["resources"]:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not item["id"]:
+            raise ManagerError("Every local inventory resource must have a non-empty string id")
+        if item["id"] in seen:
+            raise ManagerError(f"Duplicate local inventory id: {item['id']}")
+        seen.add(item["id"])
+        files = item.get("files", [])
+        if not isinstance(files, list) or any(not isinstance(entry, dict) or not isinstance(entry.get("path"), str) for entry in files):
+            raise ManagerError(f"Local inventory files must be a list of path records: {item['id']}")
+        if not files and not isinstance(item.get("installation_path", item.get("path")), str):
+            raise ManagerError(f"Local inventory resource needs installation_path, path, or files: {item['id']}")
+    return data
+
+
+def indexed_files(item: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return the concrete file records used for read-only presence/hash checks."""
+    files = item.get("files")
+    if isinstance(files, list) and files:
+        return files
+    path = item.get("installation_path", item.get("path"))
+    if isinstance(path, str) and path:
+        return [{"path": path, "sha256": item.get("sha256")}]
+    return []
+
+
+def indexed_presence(item: dict[str, Any]) -> str:
+    files = indexed_files(item)
+    if not files:
+        path = item.get("installation_path", item.get("path"))
+        return "present" if isinstance(path, str) and Path(path).expanduser().exists() else "missing"
+    return "present" if all(Path(entry["path"]).expanduser().is_file() for entry in files) else "missing"
+
+
+def verify_indexed_record(item: dict[str, Any], *, app_smoke: bool = False) -> dict[str, Any]:
+    """Verify indexed external files without granting repair or deletion ownership."""
+    entries = indexed_files(item)
+    results: list[dict[str, Any]] = []
+    for entry in entries:
+        path = Path(entry["path"]).expanduser()
+        result: dict[str, Any] = {"path": str(path), "presence": "passed" if path.is_file() else "failed"}
+        expected = entry.get("sha256")
+        if not path.is_file():
+            result["status"] = "failed"
+            result["sha256"] = "not_checked"
+            result["reason"] = "missing or not a regular file"
+        elif isinstance(expected, str) and expected:
+            observed = sha256_file(path)
+            result["expected_sha256"] = expected
+            result["observed_sha256"] = observed
+            result["sha256"] = "passed" if observed == expected else "failed"
+            result["status"] = "passed" if observed == expected else "failed"
+        else:
+            result["status"] = "unverified"
+            result["sha256"] = "not_recorded"
+            result["reason"] = "no expected SHA-256 is recorded"
+        results.append(result)
+
+    if not entries:
+        path_value = item.get("installation_path", item.get("path"))
+        exists = isinstance(path_value, str) and Path(path_value).expanduser().exists()
+        status = "unverified" if exists else "failed"
+        file_integrity: dict[str, Any] = {
+            "status": status,
+            "presence": "passed" if exists else "failed",
+            "sha256": "not_recorded",
+            "reason": "resource has no hashed file records" if exists else "resource path is missing",
+        }
+    else:
+        states = {entry["status"] for entry in results}
+        status = "failed" if "failed" in states else "unverified" if "unverified" in states else "passed"
+        file_integrity = {
+            "status": status,
+            "files_total": len(results),
+            "files_verified": sum(entry["status"] == "passed" for entry in results),
+            "files_missing_or_changed": sum(entry["status"] == "failed" for entry in results),
+            "files_without_hash": sum(entry["status"] == "unverified" for entry in results),
+            "entries": results,
+        }
+    output: dict[str, Any] = {"id": item.get("id"), "name": item.get("name"), "checks": {"file_integrity": file_integrity}}
+    if app_smoke:
+        output["checks"]["application_smoke"] = {"status": "not_run", "reason": "The local index is read-only and has no registered application smoke-test command"}
+    return output
 
 
 def save_manifest(data: dict[str, Any], path: Path | None = None) -> None:
@@ -661,16 +754,42 @@ def search_local_resources(query: str) -> dict[str, Any]:
     paths = config_paths()
     catalog = load_catalog(paths["catalog"])["resources"]
     records = load_manifest(paths["manifest"])["resources"]
+    indexed = load_local_inventory(paths.get("index"))["resources"]
     query_terms = re.findall(r"\w+", query.casefold())
 
+    def searchable_values(value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, dict):
+            return [text for nested in value.values() for text in searchable_values(nested)]
+        if isinstance(value, (list, tuple, set)):
+            return [text for nested in value for text in searchable_values(nested)]
+        return [str(value).casefold()]
+
     def matches(*values: Any) -> bool:
-        haystack = " ".join(str(value).casefold() for value in values)
+        haystack = " ".join(text for value in values for text in searchable_values(value))
         return all(term in haystack for term in query_terms)
 
-    local_catalog = [item for item in catalog if matches(item)]
-    catalog_matches = {item["id"] for item in local_catalog}
+    manager_ids = {record.get("id") for record in records}
+    indexed_ids = {record.get("id") for record in indexed}
+    overlap = manager_ids & indexed_ids
+    if overlap:
+        raise ManagerError(f"Resource id appears in both manager and local inventory: {', '.join(sorted(overlap))}")
+    existing_ids = {
+        record.get("id") for record in records
+        if record.get("status") in {"installed", "verified"}
+        and isinstance(record.get("installation_path"), str)
+        and Path(record["installation_path"]).is_file()
+        and not Path(record["installation_path"]).is_symlink()
+    }
+    existing_ids.update(
+        record.get("id") for record in indexed
+        if record.get("status") in {"installed", "verified"} and indexed_presence(record) == "present"
+    )
+    catalog_matches = {item["id"] for item in catalog if matches(item)}
+    local_catalog = [item for item in catalog if item.get("id") not in existing_ids and matches(item)]
     installed_matches = []
-    managed_paths = set()
+    known_paths = set()
     for record in records:
         raw_path = record.get("installation_path")
         if record.get("status") not in {"installed", "verified"} or not isinstance(raw_path, str) or not raw_path:
@@ -678,21 +797,32 @@ def search_local_resources(query: str) -> dict[str, Any]:
         path = Path(raw_path)
         if path.is_symlink() or not path.is_file():
             continue
-        managed_paths.add(path.absolute())
+        known_paths.add(path.absolute())
         if record.get("id") in catalog_matches or matches(record):
             installed_matches.append(record)
+
+    indexed_matches = []
+    for record in indexed:
+        for entry in indexed_files(record):
+            known_paths.add(Path(entry["path"]).expanduser().absolute())
+        source_manifest = record.get("source_manifest")
+        if isinstance(source_manifest, str) and source_manifest:
+            known_paths.add(Path(source_manifest).expanduser().absolute())
+        if record.get("id") in catalog_matches or matches(record):
+            indexed_matches.append({**record, "observed_presence": indexed_presence(record)})
 
     root = paths["library"]
     library_matches = []
     if root.is_dir():
         for path in sorted(root.rglob("*")):
-            if path.suffix.lower() not in LIBRARY_SUFFIXES or path.absolute() in managed_paths:
+            if path.suffix.lower() not in LIBRARY_SUFFIXES or path.absolute() in known_paths:
                 continue
             relative_path = path.relative_to(root)
             if matches(relative_path) and not path.is_symlink() and path.is_file():
                 library_matches.append({"path": str(path), "relative_path": str(relative_path)})
     return {
         "installed_matches": installed_matches,
+        "indexed_matches": indexed_matches,
         "library_matches": library_matches,
         "local_catalog": local_catalog,
     }
@@ -709,6 +839,11 @@ def cmd_search(args: argparse.Namespace) -> None:
     print(f"Installed matches: {len(installed_matches)}")
     for record in installed_matches:
         print(f"- {record.get('id')} [{record['status']}] {record['installation_path']}")
+    indexed_matches = result["indexed_matches"]
+    print(f"Indexed local resources: {len(indexed_matches)}")
+    for record in indexed_matches:
+        path = record.get("installation_path", record.get("path", "multiple files"))
+        print(f"- {record.get('id')} [{record.get('status', 'indexed')}; {record.get('observed_presence')}] {path} — {record.get('license', 'license unresolved')}")
     library_matches = result["library_matches"]
     print(f"Other library files: {len(library_matches)} (matched by path, review provenance before use)")
     for entry in library_matches:
@@ -739,13 +874,23 @@ def cmd_catalog(args: argparse.Namespace) -> None:
 
 def cmd_list(args: argparse.Namespace) -> None:
     manifest = load_manifest()
-    output = {"managed_resources": manifest["resources"], "detected_resource_roots": scan_counts()}
+    indexed = load_local_inventory()["resources"]
+    manager_ids = {item.get("id") for item in manifest["resources"]}
+    overlap = manager_ids & {item.get("id") for item in indexed}
+    if overlap:
+        raise ManagerError(f"Resource id appears in both manager and local inventory: {', '.join(sorted(overlap))}")
+    indexed_output = [{**item, "observed_presence": indexed_presence(item)} for item in indexed]
+    output = {"managed_resources": manifest["resources"], "indexed_resources": indexed_output, "detected_resource_roots": scan_counts()}
     if args.json:
         print(json.dumps(output, indent=2, ensure_ascii=False))
         return
     print(f"Manager-tracked resources: {len(manifest['resources'])}")
     for item in manifest["resources"]:
         print(f"- {item.get('id')} [{item.get('status')}] {item.get('installation_path')}")
+    print(f"\nIndexed local resources: {len(indexed_output)} (read-only inventory)")
+    for item in indexed_output:
+        path = item.get("installation_path", item.get("path", "multiple files"))
+        print(f"- {item.get('id')} [{item.get('status', 'indexed')}; {item.get('observed_presence')}] {path}")
     print("\nDetected editor resource roots (these counts do not imply manager ownership):")
     for app, value in output["detected_resource_roots"].items():
         print(f"- {app}: {value['path']} — {value['resource_files_by_extension']}")
@@ -791,21 +936,30 @@ def verify_record(item: dict[str, Any], *, app_smoke: bool = False) -> dict[str,
 
 def cmd_verify(args: argparse.Namespace) -> None:
     manifest = load_manifest()
-    selected = [r for r in manifest["resources"] if args.asset_id is None or r.get("id") == args.asset_id]
-    if args.asset_id and not selected:
+    indexed = load_local_inventory()["resources"]
+    manager_selected = [r for r in manifest["resources"] if args.asset_id is None or r.get("id") == args.asset_id]
+    indexed_selected = [r for r in indexed if args.asset_id is None or r.get("id") == args.asset_id]
+    manager_ids = {item.get("id") for item in manifest["resources"]}
+    overlap = manager_ids & {item.get("id") for item in indexed}
+    if overlap:
+        raise ManagerError(f"Resource id appears in both manager and local inventory: {', '.join(sorted(overlap))}")
+    if args.asset_id and not manager_selected and not indexed_selected:
         raise ManagerError(f"No installed resource with id {args.asset_id}")
-    results = [verify_record(item, app_smoke=args.app_smoke) for item in selected]
-    for item, result in zip(selected, results):
+    manager_results = [verify_record(item, app_smoke=args.app_smoke) for item in manager_selected]
+    indexed_results = [verify_indexed_record(item, app_smoke=args.app_smoke) for item in indexed_selected]
+    for item, result in zip(manager_selected, manager_results):
         item.setdefault("validation_results", {})["manager_verify"] = {"status": "passed" if all(v == "passed" or (isinstance(v, dict) and v.get("status") in {"passed", "not_run", "unavailable"}) for v in result["checks"].values()) else "failed", "result": result, "timestamp": utc_now()}
         ffmpeg_check = result["checks"].get("ffmpeg_lut_smoke")
         if ffmpeg_check and isinstance(ffmpeg_check, dict):
             item["validation_results"]["ffmpeg_lut_smoke"] = {"status": ffmpeg_check.get("status"), "details": ffmpeg_check, "timestamp": utc_now()}
-    if selected:
+    if manager_selected:
         save_manifest(manifest)
+    results = manager_results + indexed_results
     print(json.dumps(results, indent=2, ensure_ascii=False) if args.json else "\n".join(f"{r['id']}: {r['checks']}" for r in results))
-    failures = [r["id"] for item, r in zip(selected, results) if item.get("validation_results", {}).get("manager_verify", {}).get("status") == "failed"]
+    failures = [r["id"] for item, r in zip(manager_selected, manager_results) if item.get("validation_results", {}).get("manager_verify", {}).get("status") == "failed"]
+    failures.extend(r["id"] for r in indexed_results if r["checks"]["file_integrity"]["status"] in {"failed", "unverified"})
     if failures:
-        raise ManagerError(f"Verification failed for: {', '.join(failures)}")
+        raise ManagerError(f"Verification failed or remains incomplete for: {', '.join(failures)}")
 
 
 def cmd_update(args: argparse.Namespace) -> None:
