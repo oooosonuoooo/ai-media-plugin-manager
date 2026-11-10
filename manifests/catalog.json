@@ -217,13 +217,13 @@
       "installable": true,
       "status": "verified",
       "compatibility_status": "verified",
-      "compatibility": "A pinned isolated Xvfb test on Krita 5.3.4.1 loaded and rendered all eleven presets, synthetic pressure and tilt strokes, the included palette, and the Soft Touch taper. Main-profile import and physical tablet feel remain untested.",
+      "compatibility": "A pinned isolated Xvfb test on Krita 5.3.4.1 loaded and rendered all eleven presets, synthetic pressure and tilt strokes, the included palette, and the Soft Touch taper. The main Krita 5.3.4.1 profile now loads the bundle from its user resource folder; the active resource cache records 11 presets, 11 brush tips, 4 patterns, and 1 palette. A main-profile paint stroke and physical tablet feel remain untested.",
       "compatible_applications": ["Krita 5.x"],
-      "tested_application_versions": ["Krita 5.2.9 (upstream)", "Krita 5.3.4.1 (isolated Xvfb test)"],
+      "tested_application_versions": ["Krita 5.2.9 (upstream)", "Krita 5.3.4.1 (isolated Xvfb test and main-profile cache activation)"],
       "max_download_bytes": 3000000,
       "max_uncompressed_bytes": 100000000,
-      "runtime_test_note": "The isolated application test passed. Import through the main profile's Resource Manager for day-to-day use; physical pen/tablet feel is not tested.",
-      "notes": "The release bundle checksum matches the GitHub API SHA-256. The creator's MIT license covers the generator and original brush assets; artwork drawn using these brushes belongs to its creator. Test report and rendered stroke evidence are under Tests/creative-suite-coverage-20261111/krita/tilt-sketch-pencils-1.2.0/."
+      "runtime_test_note": "Isolated synthetic pressure/tilt strokes passed. Main-profile cache activation and 27 active resources are verified; a main-profile paint stroke and physical tablet feel are not tested.",
+      "notes": "The release bundle checksum matches the GitHub API SHA-256. The creator's MIT license is embedded in the bundle and covers the generator and original brush assets; artwork drawn using these brushes belongs to its creator. Isolated strokes and main-profile cache evidence are under Tests/creative-suite-coverage-20261111/krita/tilt-sketch-pencils-1.2.0/ and the machine-local import record."
     },
     {
       "id": "krita-manga-templates-v2",
