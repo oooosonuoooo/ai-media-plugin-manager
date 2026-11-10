@@ -1,0 +1,7 @@
+{
+  "library_root": "/path/to/AI-Video-Studio/Assets/Creative",
+  "target_free_space_gb": 200,
+  "minimum_free_space_gib": 100,
+  "initial_download_budget_gib": 2,
+  "max_asset_download_bytes": 50000000
+}
