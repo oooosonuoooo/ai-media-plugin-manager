@@ -44,6 +44,7 @@ Resources installed outside this manager can be indexed separately at `~/.local/
 media-assets --help
 media-assets list
 media-assets search "cinematic LUT"
+media-assets search "animated icon"
 media-assets search "Krita watercolor brush" --online
 media-assets catalog
 media-assets install <catalog-id>
@@ -58,6 +59,20 @@ Search shows matching manager-installed records, indexed external resources with
 Online search adds GitHub repository metadata. Review the exact license, provenance, compatibility, file type, size, source pin, and install target before making an asset installable.
 
 The default install flow asks for confirmation. `cleanup` is a dry run unless both `--apply` and `--yes` are supplied. Updating backs up the previous manager-owned file before replacing it. Existing unrelated files are never overwritten or deleted.
+
+## Kdenlive Lottie animations
+
+The manager can catalog individual, pinned Lottie JSON animations in the shared `kdenlive/motion-graphics` library. The Lottie validator bounds file size, canvas dimensions, frame rate, duration, and JSON complexity; it rejects expression strings and external image paths. It does not execute downloaded code. The selected useAnimations entries retain the upstream MIT license notice beside the JSON files.
+
+Kdenlive's 26.08 manual documents JSON (Lottie) and Glaxnimate `.rawr` support, with alpha for timeline overlays. Create or import animations through the project bin, then render a short disposable clip to confirm the exact project and animation. The manager's MLT format/render checks do not replace that GUI project-bin check. See [Kdenlive's animation documentation](https://docs.kdenlive.org/en/project_and_asset_management/project_bin/animation.html) and [resource integration notes](references/resource-integration.md).
+
+Example:
+
+```sh
+media-assets search "animated icon"
+media-assets install useanimations-lottie-checkmark
+media-assets verify useanimations-lottie-checkmark
+```
 
 ## Catalog and provenance
 

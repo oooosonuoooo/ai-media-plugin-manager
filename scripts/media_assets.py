@@ -468,10 +468,94 @@ def validate_bundle_archive(path: Path, expected_member: str, *, max_uncompresse
     return {"format": "krita_bundle_zip", "archive_member": expected_member, "bundle_bytes": len(payload), "bundle_members": len(bundle.namelist()), "uncompressed_bytes": total}
 
 
+def validate_lottie_json(path: Path, *, max_bytes: int = 1_000_000, max_frames: int = 1800) -> dict[str, Any]:
+    """Validate a bounded, self-contained Lottie JSON animation without executing expressions."""
+    if not path.is_file() or path.stat().st_size == 0:
+        raise ManagerError("Lottie JSON file is missing or empty")
+    if path.stat().st_size > max_bytes:
+        raise ManagerError(f"Lottie JSON exceeds the {max_bytes}-byte inspection limit")
+
+    def reject_constant(value: str) -> None:
+        raise ValueError(f"non-finite JSON number: {value}")
+
+    try:
+        with path.open("rb") as stream:
+            payload = stream.read(max_bytes + 1)
+        if len(payload) > max_bytes:
+            raise ManagerError(f"Lottie JSON exceeds the {max_bytes}-byte inspection limit")
+        document = json.loads(payload.decode("utf-8"), parse_constant=reject_constant)
+    except ManagerError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError, RecursionError) as exc:
+        raise ManagerError(f"Lottie JSON is invalid: {exc}") from exc
+    if not isinstance(document, dict):
+        raise ManagerError("Lottie JSON root must be an object")
+
+    def finite_number(value: Any) -> bool:
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return False
+        try:
+            return math.isfinite(value)
+        except OverflowError:
+            return False
+
+    width, height = document.get("w"), document.get("h")
+    frame_rate = document.get("fr")
+    in_frame, out_frame = document.get("ip"), document.get("op")
+    layers = document.get("layers")
+    assets = document.get("assets", [])
+    if not all(isinstance(dimension, int) and not isinstance(dimension, bool) and 1 <= dimension <= 8192 for dimension in (width, height)):
+        raise ManagerError("Lottie canvas dimensions must be integers between 1 and 8192")
+    if not finite_number(frame_rate) or not 0 < frame_rate <= 120:
+        raise ManagerError("Lottie frame rate must be between 0 and 120 fps")
+    if not finite_number(in_frame) or not finite_number(out_frame) or not 0 <= in_frame < out_frame:
+        raise ManagerError("Lottie in/out frames must be finite, non-negative, and ordered")
+    if out_frame - in_frame > max_frames:
+        raise ManagerError(f"Lottie duration exceeds the {max_frames}-frame inspection limit")
+    if not isinstance(layers, list) or not layers or len(layers) > 2000 or any(not isinstance(layer, dict) for layer in layers):
+        raise ManagerError("Lottie layers must be a non-empty list of objects (maximum 2000)")
+    if not isinstance(assets, list) or len(assets) > 2000 or any(not isinstance(asset, dict) for asset in assets):
+        raise ManagerError("Lottie assets must be a list of objects (maximum 2000)")
+
+    # Walk iteratively to bound work and reject expression strings and external image paths.
+    pending: list[Any] = [document]
+    visited = 0
+    while pending:
+        value = pending.pop()
+        visited += 1
+        if visited > 200_000:
+            raise ManagerError("Lottie JSON contains too many values to inspect safely")
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if isinstance(key, str) and key.lower() in {"x", "expression"} and isinstance(child, str) and child.strip():
+                    raise ManagerError("Lottie expressions are not allowed in static animation assets")
+                if key in {"p", "u"} and isinstance(child, str) and child.strip():
+                    raise ManagerError("Lottie image assets must not reference external files")
+                pending.append(child)
+        elif isinstance(value, list):
+            pending.extend(value)
+
+    return {
+        "format": "lottie_json",
+        "bytes": len(payload),
+        "width": width,
+        "height": height,
+        "frame_rate": frame_rate,
+        "frames": out_frame - in_frame,
+        "duration_seconds": round((out_frame - in_frame) / frame_rate, 6),
+        "layers": len(layers),
+        "assets": len(assets),
+        "external_image_paths": 0,
+        "expressions": 0,
+    }
+
+
 def validate_resource_file(item: dict[str, Any], path: Path) -> dict[str, Any]:
     resource_type = item.get("resource_type")
     if resource_type == "cube_lut":
         return validate_cube(path)
+    if resource_type == "lottie_json":
+        return validate_lottie_json(path, max_bytes=int(item.get("max_download_bytes", 1_000_000)), max_frames=int(item.get("max_lottie_frames", 1800)))
     if resource_type == "krita_bundle":
         return validate_bundle(path, max_uncompressed_bytes=int(item.get("max_uncompressed_bytes", 100_000_000)))
     if resource_type == "krita_bundle_archive":

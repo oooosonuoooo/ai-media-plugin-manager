@@ -296,6 +296,67 @@ class CubeValidationTests(unittest.TestCase):
                 manager.validate_cube(path)
 
 
+class LottieValidationTests(unittest.TestCase):
+    def write_lottie(self, path: Path, **changes) -> None:
+        document = {
+            "v": "5.7.1", "fr": 30, "ip": 0, "op": 45, "w": 32, "h": 32,
+            "nm": "fixture", "assets": [], "layers": [{"ty": 4, "nm": "shape"}],
+        }
+        document.update(changes)
+        path.write_text(json.dumps(document), encoding="utf-8")
+
+    def test_accepts_bounded_self_contained_animation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "valid.json"
+            self.write_lottie(path)
+            result = manager.validate_lottie_json(path)
+        self.assertEqual(result["format"], "lottie_json")
+        self.assertEqual(result["width"], 32)
+        self.assertEqual(result["frames"], 45)
+        self.assertEqual(result["duration_seconds"], 1.5)
+
+    def test_rejects_invalid_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "invalid.json"
+            path.write_text("{oops", encoding="utf-8")
+            with self.assertRaisesRegex(manager.ManagerError, "Lottie JSON is invalid"):
+                manager.validate_lottie_json(path)
+
+    def test_rejects_external_image_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "external.json"
+            self.write_lottie(path, assets=[{"id": "image", "u": "images/", "p": "image.png"}])
+            with self.assertRaisesRegex(manager.ManagerError, "external files"):
+                manager.validate_lottie_json(path)
+
+    def test_rejects_expression_strings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "expression.json"
+            self.write_lottie(path, layers=[{"ty": 4, "ks": {"o": {"x": "time * 10"}}}])
+            with self.assertRaisesRegex(manager.ManagerError, "expressions"):
+                manager.validate_lottie_json(path)
+
+    def test_rejects_nonfinite_and_extremely_large_numbers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "numeric.json"
+            self.write_lottie(path, fr=float("inf"))
+            with self.assertRaisesRegex(manager.ManagerError, "Lottie JSON is invalid"):
+                manager.validate_lottie_json(path)
+            self.write_lottie(path, fr=10 ** 1000)
+            with self.assertRaisesRegex(manager.ManagerError, "frame rate"):
+                manager.validate_lottie_json(path)
+
+    def test_rejects_files_over_size_limit_and_oversized_duration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "large.json"
+            self.write_lottie(path)
+            with self.assertRaisesRegex(manager.ManagerError, "inspection limit"):
+                manager.validate_lottie_json(path, max_bytes=10)
+            self.write_lottie(path, op=2000)
+            with self.assertRaisesRegex(manager.ManagerError, "frame inspection limit"):
+                manager.validate_lottie_json(path)
+
+
 class BundleValidationTests(unittest.TestCase):
     def test_install_replaces_modified_extracted_cache_with_archive_member(self):
         with tempfile.TemporaryDirectory() as tmp:
