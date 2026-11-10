@@ -748,15 +748,15 @@
       "resource_type": "krita_bundle_archive",
       "install_target": "studio:krita/bundles",
       "installable": true,
-      "status": "downloaded",
+      "status": "installed",
       "compatibility_status": "verified",
-      "compatibility": "The author requests Krita 5.2.6 or newer; this workstation has Krita 5.3.4.1. Bundle integrity and resource counts are verified, but active Krita import and brush UI checks are pending.",
+      "compatibility": "The author requests Krita 5.2.6 or newer; this workstation has Krita 5.3.4.1. Native Resource Manager import and library listing are confirmed, and all 46 presets, 25 brush tips, and 6 patterns are active. Brush canvas use is not smoke-tested.",
       "compatible_applications": ["Krita 5.2.6+"],
-      "tested_application_versions": [],
+      "tested_application_versions": ["Krita 5.3.4.1"],
       "max_download_bytes": 10000000,
       "max_uncompressed_bytes": 12000000,
-      "runtime_test_note": "Import with Settings > Manage Resources > Import Resources, then verify the deevad 25.01 tag and 46 presets in Krita.",
-      "notes": "The official archive SHA-256 matches the author page. The extracted bundle metadata reports 46 presets, 25 brush tips, and 6 patterns. A verified copy is staged in the local Creative library but has not been imported into Krita's active resource cache. Manual painting only; AI derivation is prohibited."
+      "runtime_test_note": "Resource Manager import and Manage Resource Libraries listing are confirmed. Use a representative preset on a disposable canvas before marking runtime behavior verified.",
+      "notes": "The official archive SHA-256 matches the author page. The active Krita profile copy is byte-identical to the staged bundle; the resource cache lists 46 presets, 25 brush tips, and 6 patterns active, and Manage Resource Libraries displays Deevad 25.01. A canvas brush-use smoke test remains pending. Manual painting only; AI derivation is prohibited."
     }
   ]
 }
